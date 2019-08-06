@@ -1,15 +1,19 @@
-# -*- coding: utf-8 -*-
+    # -*- coding: utf-8 -*-
 from __future__ import print_function
+from collections import Counter
 import click
 import os
 import re
 import face_recognition.api as face_recognition
+import face_recognition.config as config
+import face_recognition.model as model
 import multiprocessing
 import itertools
 import sys
 import PIL.Image
 import numpy as np
-
+import math
+import pymysql
 
 def scan_known_people(known_people_folder):
     known_names = []
@@ -65,7 +69,7 @@ def image_binarization(known_face_encodings):
                 known_face_binary_encodings[i][j] = 127
     return known_face_binary_encodings
 
-def test_image(image_to_check, known_names, known_face_encodings, tolerance=0.6, show_distance=False):
+def image_recognition(image_to_check, tolerance, bucket, confidence):
     unknown_image = face_recognition.load_image_file(image_to_check)
 
     # Scale down image if it's giant so things run a little faster
@@ -75,19 +79,53 @@ def test_image(image_to_check, known_names, known_face_encodings, tolerance=0.6,
         unknown_image = np.array(pil_img)
 
     unknown_encodings = face_recognition.face_encodings(unknown_image)
+    enc_len = len(unknown_encodings)
+    if enc_len > 1:
+        recg_res = "MoreThanOneFaceFound."
+        return recg_res
 
-    for unknown_encoding in unknown_encodings:
-        distances = face_recognition.face_distance(known_face_encodings, unknown_encoding)
-        result = list(distances <= tolerance)
+    if enc_len == 0:
+        recg_res = "NoFacesFound."
+        return recg_res
 
-        if True in result:
-            [print_result(image_to_check, name, distance, show_distance) for is_match, name, distance in zip(result, known_names, distances) if is_match]
+    db = pymysql.connect(config.get_db_host(), config.get_db_user(), config.get_db_pass(), config.get_db_name())
+    cursor = db.cursor()
+
+    for i, eigenval in enumerate(unknown_encodings[0]):
+        if i == 0:
+            sql_t = "(select id from index_" \
+                    + str(i + 1) + " force index(ridx) where eigenvalue >= (" \
+                    + str(eigenval - tolerance) + ") and (eigenvalue <= " \
+                    + str(eigenval + tolerance) + ") order by abs(power(eigenvalue,2) - " \
+                    + str(math.pow(eigenval, 2)) + ") asc limit " + str(bucket) + ") "
         else:
-            print_result(image_to_check, "unknown_person", None, show_distance)
+            sql_t += "union all (select id from index_" \
+                     + str(i + 1) + " force index(ridx) where eigenvalue >= (" \
+                     + str(eigenval - tolerance) + ") and (eigenvalue <= " \
+                     + str(eigenval + tolerance) + ") order by abs(power(eigenvalue,2) - " \
+                     + str(math.pow(eigenval, 2)) + ") asc limit " + str(bucket) + ") "
 
-    if not unknown_encodings:
-        # print out fact that no faces were found in image
-        print_result(image_to_check, "no_persons_found", None, show_distance)
+    cursor.execute(sql_t)
+    data = cursor.fetchall()
+    data = [i for item in data for i in item]
+    count = Counter(data)
+    count_dict = dict(count)
+    # sort
+    # test = sorted(count_dict.items(), key = lambda k: k[1], reverse = True)
+    if len(count_dict) > 0:
+        max_item = max(count_dict.items(), key = lambda x : x[1])
+        if max_item[1] >= confidence:
+            sql_t = "select name, id_card, sex, age, phone from person_info where id=%s" %(max_item[0])
+            cursor.execute(sql_t)
+            recg_res = cursor.fetchone(), max_item[1]
+        else:
+            recg_res = "Unrecognized,but one or more similar faces found"
+    else:
+        recg_res = "Unrecognized"
+
+    cursor.close()
+    db.close()
+    return recg_res
 
 
 def image_files_in_folder(folder):
@@ -119,26 +157,37 @@ def process_images_in_process_pool(images_to_check, known_names, known_face_enco
 
 
 @click.command()
-@click.argument('known_people_folder')
 @click.argument('image_to_check')
 @click.option('--cpus', default=1, help='number of CPU cores to use in parallel (can speed up processing lots of images). -1 means "use all in system"')
-@click.option('--tolerance', default=0.6, help='Tolerance for face comparisons. Default is 0.6. Lower this if you get multiple matches for the same person.')
+@click.option('--tolerance', default=0.0, help='Tolerance for face comparisons. Default is 0.028. Lower this if you get multiple matches for the same person.')
+@click.option('--bucket', default=0, help='Capacity of the eigenvalue filtered out')
+@click.option('--confidence', default=0, help='Confidence level of the result score to judge the result is true. Default is 40.')
 @click.option('--show-distance', default=False, type=bool, help='Output face distance. Useful for tweaking tolerance setting.')
-def main(known_people_folder, image_to_check, cpus, tolerance, show_distance):
-    known_names, known_face_encodings = scan_known_people(known_people_folder)
-
-    # Multi-core processing only supported on Python 3.4 or greater
+def main(image_to_check, cpus, tolerance, bucket, confidence, show_distance):
+        # Multi-core processing only supported on Python 3.4 or greater
     if (sys.version_info < (3, 4)) and cpus != 1:
         click.echo("WARNING: Multi-processing support requires Python 3.4 or greater. Falling back to single-threaded processing!")
         cpus = 1
 
+    if not os.path.isfile(image_to_check):
+        print("FileNotFound")
+        return
+
+    if tolerance == 0:
+        tolerance = float(model.get_tolerance())
+    if bucket == 0:
+        bucket = int(model.get_bucket())
+    if confidence == 0:
+        confidence = int(model.get_confidence())
+
     if os.path.isdir(image_to_check):
         if cpus == 1:
-            [test_image(image_file, known_names, known_face_encodings, tolerance, show_distance) for image_file in image_files_in_folder(image_to_check)]
-        else:
-            process_images_in_process_pool(image_files_in_folder(image_to_check), known_names, known_face_encodings, cpus, tolerance, show_distance)
+            for image_file in image_files_in_folder(image_to_check):
+                print(image_recognition(image_file, tolerance, bucket, confidence))
+        # else:
+        #     process_images_in_process_pool(image_files_in_folder(image_to_check), known_names, known_face_encodings, cpus, tolerance, show_distance)
     else:
-        test_image(image_to_check, known_names, known_face_encodings, tolerance, show_distance)
+        print(image_recognition(image_to_check, tolerance, bucket, confidence))
 
 
 if __name__ == "__main__":

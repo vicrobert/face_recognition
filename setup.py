@@ -32,17 +32,25 @@ setup(
     url='https://github.com/ageitgey/face_recognition',
     packages=[
         'face_recognition',
+        'config',
+        'database',
     ],
     package_dir={'face_recognition': 'face_recognition'},
     package_data={
-        'face_recognition': ['models/*.dat']
+        'face_recognition': ['models/*.dat'],
     },
     entry_points={
         'console_scripts': [
             'face_recognition=face_recognition.face_recognition_cli:main',
-            'face_detection=face_recognition.face_detection_cli:main'
+            'face_recognition_v2=face_recognition.face_recognition_cli_v2:main',
+            'face_detection=face_recognition.face_detection_cli:main',
+            'face_import=face_recognition.face_import_cli:main'
         ]
     },
+    data_files=[
+        ('/etc/face_recognition/config',['config/db.ini','config/model.ini']),
+        ('/etc/face_recognition/database', ['database/face_recognition.sql'])
+    ],
     install_requires=requirements,
     license="MIT license",
     zip_safe=False,

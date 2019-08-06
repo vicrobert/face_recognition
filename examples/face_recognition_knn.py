@@ -194,7 +194,7 @@ if __name__ == "__main__":
 
         print("Looking for faces in {}".format(image_file))
 
-        # Find all people in the image using a trained classifier model
+        # Find all peoplee in the image using a trained classifier model
         # Note: You can pass in either a classifier file name or a classifier model instance
         predictions = predict(full_file_path, model_path="trained_knn_model.clf")
 

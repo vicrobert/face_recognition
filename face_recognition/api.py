@@ -72,7 +72,7 @@ def face_distance(face_encodings, face_to_compare):
     if len(face_encodings) == 0:
         return np.empty((0))
 
-    return np.linalg.norm(face_encodings - face_to_compare, axis=1)
+    return np.linalg.norm(face_encodings - face_to_compare, ord=1, axis=1)
 
 
 def load_image_file(file, mode='RGB'):
